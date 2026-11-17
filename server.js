@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 
-const { GEMINI_API_KEY, PORT = 3000, MODEL = "gemini-2.5-flash" } = process.env;
+const { GEMINI_API_KEY, PORT = 3000, MODEL = "gemini-3.8-flash" } = process.env;
 
 if (!GEMINI_API_KEY) {
   console.error("Missing GEMINI_API_KEY environment variable.");
@@ -58,17 +58,19 @@ app.post("/chat", async (req, res) => {
       {
         method: "POST",
         headers: { "content-type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
+        signal: AbortSignal.timeout(25000), // fail fast instead of hanging for minutes
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: SYSTEM }] },
           contents,
-          generationConfig: { maxOutputTokens: 1000, temperature: 0.7 },
+          // Gemini 3.x: no temperature/top_p/top_k; use a low thinking level for fast spoken replies.
+          generationConfig: { maxOutputTokens: 2000, thinkingConfig: { thinkingLevel: "low" } },
         }),
       }
     );
     const data = await r.json();
     if (!r.ok) {
       console.error("Gemini API error:", r.status, JSON.stringify(data));
-      return res.status(502).json({ error: "Upstream error" });
+      return res.status(502).json({ error: "Upstream error", detail: data.error?.message || "" });
     }
     const reply = (data.candidates?.[0]?.content?.parts ?? [])
       .map((p) => p.text ?? "")
@@ -81,7 +83,11 @@ app.post("/chat", async (req, res) => {
     res.json({ reply });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Server error" });
+    const timedOut = err?.name === "TimeoutError" || err?.name === "AbortError";
+    res.status(timedOut ? 504 : 500).json({
+      error: timedOut ? "Gemini timeout" : "Server error",
+      detail: timedOut ? "Gemini did not answer within 25 seconds" : String(err?.cause?.code || err?.message || ""),
+    });
   }
 });
 
