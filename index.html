@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Cruzr</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html,body{height:100%;margin:0;overflow:hidden}
+body{--a:#7aa2ff;--b:#2f5bff;--c:#1b2f8f;--ring:#5b8cff;
+  background:radial-gradient(circle at 50% 40%,#16203d 0%,#0b1020 70%);
+  color:#e8edff;font-family:system-ui,"Segoe UI",Tahoma,Arial,sans-serif;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2.2rem;
+  transition:background .4s}
+body[data-state="listening"]{--a:#6ff0b0;--b:#16c47f;--c:#0a7a52;--ring:#2de39a}
+body[data-state="thinking"]{--a:#c9a6ff;--b:#8b5cf6;--c:#4c2a9a;--ring:#a78bfa}
+body[data-state="speaking"]{--a:#7fe3ff;--b:#1fa8ff;--c:#0b5fa8;--ring:#4cc9ff}
+
+#orb{position:relative;width:min(72vmin,520px);aspect-ratio:1;border-radius:50%;border:0;padding:0;cursor:pointer;
+  background:radial-gradient(circle at 35% 30%,var(--a),var(--b) 55%,var(--c));
+  box-shadow:0 0 60px -10px var(--ring),inset 0 -20px 50px rgba(0,0,0,.25);
+  display:grid;place-items:center;color:#fff;
+  -webkit-tap-highlight-color:transparent;touch-action:manipulation;outline:none;
+  animation:breathe 4s ease-in-out infinite;transition:box-shadow .4s}
+@keyframes breathe{50%{transform:scale(1.035)}}
+#orb::before,#orb::after{content:"";position:absolute;inset:0;border-radius:50%;border:3px solid var(--ring);opacity:0;pointer-events:none}
+body[data-state="listening"] #orb{animation:none}
+body[data-state="listening"] #orb::before{animation:ring 1.8s ease-out infinite}
+body[data-state="listening"] #orb::after{animation:ring 1.8s ease-out .9s infinite}
+@keyframes ring{0%{transform:scale(1);opacity:.7}100%{transform:scale(1.45);opacity:0}}
+
+.ico{grid-area:1/1;width:34%;height:34%;display:none}
+.ico svg{width:100%;height:100%;fill:none;stroke:#fff;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+body[data-state="idle"] .mic,body[data-state="listening"] .mic{display:block}
+body[data-state="listening"] .mic{animation:pulse 1s ease-in-out infinite}
+@keyframes pulse{50%{transform:scale(1.15)}}
+
+.spin{width:28%;height:28%;border:.55rem solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%}
+body[data-state="thinking"] .spin{display:block;animation:rot .9s linear infinite}
+@keyframes rot{to{transform:rotate(360deg)}}
+
+.bars{align-items:center;justify-content:center;gap:5%;width:40%;height:30%}
+body[data-state="speaking"] .bars{display:flex}
+.bars i{display:block;width:9%;height:100%;border-radius:999px;background:#fff;animation:bar .9s ease-in-out infinite}
+.bars i:nth-child(2){animation-delay:.15s}.bars i:nth-child(3){animation-delay:.3s}
+.bars i:nth-child(4){animation-delay:.45s}.bars i:nth-child(5){animation-delay:.6s}
+@keyframes bar{0%,100%{transform:scaleY(.25)}50%{transform:scaleY(1)}}
+
+#st{min-height:1.8rem;font-size:1.3rem;color:#aab6dd;text-align:center;padding:0 1rem}
+#lg{position:fixed;bottom:calc(1.2rem + env(safe-area-inset-bottom,0px));left:50%;transform:translateX(-50%);
+  background:rgba(255,255,255,.1);color:#e8edff;border:0;border-radius:999px;padding:.55rem 1.4rem;font:inherit;font-size:1.05rem;cursor:pointer}
+</style>
+</head>
+<body data-state="idle">
+<button id="orb" aria-label="talk">
+  <span class="ico mic"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></span>
+  <span class="ico spin"></span>
+  <span class="ico bars"><i></i><i></i><i></i><i></i><i></i></span>
+</button>
+<div id="st" dir="auto"></div>
+<button id="lg"></button>
+<script>
+var CONFIG = { endpoint: "/chat" };
+
+var T = {
+  ar: { tap: "اضغط على الدائرة وتكلم", listen: "أسمعك…", think: "لحظة…", hi: "هلا! كيف أقدر أساعدك؟", err: "تعذّر الاتصال، حاول مرة ثانية", nomic: "المتصفح ما يدعم التعرف على الصوت", denied: "اسمح للمتصفح باستخدام الميكروفون", lg: "English" },
+  en: { tap: "Tap the circle and talk", listen: "Listening…", think: "One moment…", hi: "Hi! How can I help you?", err: "Couldn’t connect, please try again", nomic: "Voice recognition isn’t supported in this browser", denied: "Please allow microphone access", lg: "عربي" }
+};
+var lang = "ar", active = false, state = "idle", hist = [], rec = null, greeted = false, speakTimer = null;
+var $ = function (id) { return document.getElementById(id); };
+var st = $("st");
+
+function setState(s, msg) { state = s; document.body.setAttribute("data-state", s); st.textContent = msg || ""; }
+
+function pickVoice(l) {
+  var vs = window.speechSynthesis ? speechSynthesis.getVoices() : [];
+  for (var i = 0; i < vs.length; i++) if (vs[i].lang.toLowerCase().indexOf(l) === 0) return vs[i];
+  return null;
+}
+// Replaceable: step 2 swaps this for a more human-sounding voice.
+function speak(text, done) {
+  var finished = false;
+  function fin() { if (finished) return; finished = true; clearTimeout(speakTimer); if (done) done(); }
+  if (!window.speechSynthesis) { fin(); return; }
+  try {
+    speechSynthesis.cancel();
+    var u = new SpeechSynthesisUtterance(text);
+    var l = /[\u0600-\u06FF]/.test(text) ? "ar" : "en";
+    u.lang = l === "ar" ? "ar-SA" : "en-US";
+    var v = pickVoice(l); if (v) u.voice = v;
+    u.rate = 0.95; u.onend = fin; u.onerror = fin;
+    speechSynthesis.speak(u);
+    speakTimer = setTimeout(fin, text.length * 100 + 4000);
+  } catch (e) { fin(); }
+}
+
+function stopAll() {
+  active = false; clearTimeout(speakTimer);
+  try { if (rec) rec.abort(); } catch (e) {}
+  try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch (e) {}
+  setState("idle", T[lang].tap);
+}
+
+function listen() {
+  if (!active) return;
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { active = false; setState("idle", T[lang].nomic); return; }
+  var r = new SR(); rec = r;
+  r.lang = lang === "ar" ? "ar-SA" : "en-US"; r.interimResults = false; r.maxAlternatives = 1;
+  var got = false;
+  r.onresult = function (e) {
+    var t = (e.results[0][0].transcript || "").trim();
+    if (t) { got = true; ask(t); }
+  };
+  r.onerror = function (e) {
+    if (e.error === "not-allowed" || e.error === "service-not-allowed") { stopAll(); setState("idle", T[lang].denied); }
+  };
+  r.onend = function () {
+    if (rec === r) rec = null;
+    if (active && state === "listening" && !got) setTimeout(listen, 300); // silence: keep listening
+  };
+  setState("listening", T[lang].listen);
+  try { r.start(); } catch (e) {}
+}
+
+async function ask(text) {
+  setState("thinking", T[lang].think);
+  hist.push({ role: "user", content: text });
+  try {
+    var r = await fetch(CONFIG.endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: hist.slice(-11) }) });
+    var j = await r.json().catch(function () { return {}; });
+    if (!r.ok || !j.reply) throw new Error(j.detail || j.error || ("HTTP " + r.status));
+    hist.push({ role: "assistant", content: j.reply });
+    if (!active) return;
+    setState("speaking", "");
+    speak(j.reply, function () { if (active) listen(); });
+  } catch (e) {
+    hist.pop(); active = false; setState("idle", T[lang].err + " (" + e.message + ")");
+  }
+}
+
+$("orb").onclick = function () {
+  if (active) { stopAll(); return; }
+  active = true;
+  if (!greeted) { greeted = true; setState("speaking", ""); speak(T[lang].hi, function () { if (active) listen(); }); }
+  else listen();
+};
+$("lg").onclick = function () {
+  lang = lang === "ar" ? "en" : "ar";
+  $("lg").textContent = T[lang].lg;
+  document.documentElement.lang = lang;
+  if (state === "idle") st.textContent = T[lang].tap;
+  else if (state === "listening") { st.textContent = T[lang].listen; try { if (rec) rec.abort(); } catch (e) {} }
+};
+if (window.speechSynthesis) speechSynthesis.getVoices();
+$("lg").textContent = T[lang].lg; st.textContent = T[lang].tap;
+</script>
+</body>
+</html>
